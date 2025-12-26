@@ -1,0 +1,44 @@
+# AutoKatha - Comic to Video Pipeline
+# For MacBook Pro M4 Max (36GB)
+
+# Core
+gradio>=4.0.0
+torch>=2.0.0
+torchvision
+torchaudio
+
+# Comic Reading - Moondream2 VLM
+transformers>=4.36.0
+einops
+timm
+
+# Screenwriter - Ollama integration
+ollama
+
+# Artist - SDXL Lightning
+diffusers>=0.25.0
+accelerate
+safetensors
+
+# Animator - Stable Video Diffusion
+# (uses diffusers, already included above)
+
+# Voice - Coqui TTS
+TTS>=0.22.0
+
+# Captions - Whisper
+openai-whisper
+
+# Video Processing
+moviepy>=1.0.3
+ffmpeg-python
+pydub
+
+# Document Processing
+pdf2image
+pillow>=10.0.0
+numpy
+
+# Utilities
+tqdm
+python-dotenv
