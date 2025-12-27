@@ -86,20 +86,10 @@ WHISPER_MODEL = "base"  # Options: tiny, base, small, medium, large
 # ============================================================================
 # VIDEO SETTINGS
 # ============================================================================
+VIDEO_WIDTH = 1920
+VIDEO_HEIGHT = 1080
 VIDEO_FPS = 24
 PANEL_DURATION = 5  # seconds per panel if no audio timing
-
-# Aspect ratio options for different platforms
-ASPECT_RATIOS = {
-    "16:9 (YouTube/Landscape)": (1024, 576),
-    "9:16 (TikTok/Reels)": (576, 1024),
-    "1:1 (Instagram Square)": (1024, 1024),
-    "4:3 (Classic)": (1024, 768),
-    "21:9 (Cinematic)": (1024, 440),
-}
-
-# Default aspect ratio
-DEFAULT_ASPECT_RATIO = "16:9 (YouTube/Landscape)"
 
 # ============================================================================
 # DEVICE SETTINGS
