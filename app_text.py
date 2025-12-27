@@ -1,6 +1,13 @@
 """
 AutoKatha - Text Story to Video
 Simplified interface: paste story text → get animated video
+
+Features:
+- Multiple aspect ratios (16:9, 9:16, 1:1)
+- Dynamic scene count based on text length
+- Character consistency across scenes
+- Enhanced image prompts with style tokens
+- Multi-backend TTS (F5-TTS, XTTS, Edge-TTS)
 """
 import gradio as gr
 from pathlib import Path
@@ -13,11 +20,15 @@ import os
 
 from pipeline.memory_manager import MemoryManager, cleanup
 from pipeline.comfyui_client import ComfyUIClient
+from pipeline.story_processor import (
+    StoryProcessor, AspectRatio, Character, Scene, 
+    StoryAnalysis, chunk_large_text
+)
 import config
 
 
 class TextToVideo:
-    """Simple text story to video pipeline."""
+    """Text story to video pipeline with enhanced features."""
     
     def __init__(self):
         self.output_dir = config.OUTPUT_DIR
@@ -25,6 +36,13 @@ class TextToVideo:
         self.comfyui_client = None
         self.use_comfyui = False
         self.diffusers_pipe = None
+        self._tts = None
+        
+        # Story processor for intelligent scene splitting
+        self.story_processor = StoryProcessor()
+        
+        # Current processing state
+        self.current_analysis: StoryAnalysis = None
         
         # Try to connect to ComfyUI
         self._init_comfyui()
@@ -43,82 +61,103 @@ class TextToVideo:
                 print("⚠️ ComfyUI not running - falling back to diffusers")
         except Exception as e:
             print(f"⚠️ ComfyUI connection failed: {e} - falling back to diffusers")
-        
-    def split_into_scenes(self, story_text: str, num_scenes: int = 5) -> list:
-        """
-        Use Gemma3 via Ollama to split story into scenes with image prompts.
-        """
-        import requests
-        
-        prompt = f"""You are a storyboard artist. Split this story into exactly {num_scenes} scenes.
-For each scene, provide:
-1. A brief narration text (1-2 sentences to be read aloud)
-2. An image description for AI art generation (detailed visual description)
-
-Story:
-{story_text}
-
-Respond in JSON format:
-[
-  {{"narration": "...", "image_prompt": "..."}},
-  ...
-]
-
-Only output the JSON array, nothing else."""
-
-        try:
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json={
-                    "model": "gemma3:4b",
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.7}
-                },
-                timeout=120
-            )
-            
-            result = response.json().get("response", "")
-            
-            # Extract JSON from response
-            import re
-            json_match = re.search(r'\[[\s\S]*\]', result)
-            if json_match:
-                scenes = json.loads(json_match.group())
-                return scenes[:num_scenes]
-            else:
-                raise ValueError("No JSON found in response")
-                
-        except Exception as e:
-            print(f"❌ Scene splitting error: {e}")
-            # Fallback: split text evenly
-            words = story_text.split()
-            chunk_size = len(words) // num_scenes
-            scenes = []
-            for i in range(num_scenes):
-                start = i * chunk_size
-                end = start + chunk_size if i < num_scenes - 1 else len(words)
-                text = " ".join(words[start:end])
-                scenes.append({
-                    "narration": text,
-                    "image_prompt": f"Scene {i+1}: {text[:100]}"
-                })
-            return scenes
     
-    def generate_image(self, prompt: str, pipe=None) -> Image.Image:
+    def get_aspect_dimensions(self, aspect_ratio: str) -> tuple:
+        """Get image dimensions for aspect ratio."""
+        dimensions = {
+            "16:9": (1024, 576),
+            "9:16": (576, 1024),
+            "1:1": (1024, 1024),
+            "21:9": (1024, 440),
+        }
+        return dimensions.get(aspect_ratio, (1024, 576))
+    
+    def calculate_scenes(self, text: str, mode: str = "auto", custom_count: int = 5) -> int:
+        """
+        Calculate number of scenes based on mode.
+        
+        Args:
+            text: Story text
+            mode: "auto", "short" (3-5), "medium" (6-10), "long" (11-20), "custom"
+            custom_count: Custom scene count when mode is "custom"
+        """
+        if mode == "custom":
+            return custom_count
+        elif mode == "auto":
+            return self.story_processor.calculate_scene_count(text)
+        elif mode == "short":
+            return min(5, max(3, len(text.split()) // 200))
+        elif mode == "medium":
+            return min(10, max(6, len(text.split()) // 150))
+        elif mode == "long":
+            return min(20, max(11, len(text.split()) // 100))
+        else:
+            return 5
+        
+    def split_into_scenes(
+        self, 
+        story_text: str, 
+        num_scenes: int = 5,
+        extract_characters: bool = True,
+        style_prefix: str = "",
+    ) -> list:
+        """
+        Enhanced scene splitting with character extraction and consistency.
+        """
+        # Use story processor for intelligent splitting
+        analysis = self.story_processor.process_story(
+            text=story_text,
+            title="Story",
+            num_scenes=num_scenes,
+            style_prefix=style_prefix,
+            extract_characters=extract_characters,
+        )
+        
+        self.current_analysis = analysis
+        
+        # Convert to legacy format for compatibility
+        scenes = []
+        for scene in analysis.scenes:
+            # Enhance prompt with character consistency
+            enhanced_prompt = scene.image_prompt
+            if analysis.characters:
+                enhanced_prompt = self.story_processor.enhance_image_prompt(
+                    base_prompt=scene.image_prompt,
+                    characters=[c for c in analysis.characters if c.name in scene.characters],
+                    style_tokens=style_prefix,
+                )
+            
+            scenes.append({
+                "narration": scene.narration,
+                "image_prompt": enhanced_prompt,
+                "characters": scene.characters,
+                "setting": scene.setting,
+                "mood": scene.mood,
+            })
+        
+        return scenes
+    
+    def generate_image(self, prompt: str, pipe=None, aspect_ratio: str = "16:9") -> Image.Image:
         """
         Generate image using ComfyUI (preferred) or SDXL Lightning (fallback).
+        
+        Args:
+            prompt: Image prompt
+            pipe: Diffusers pipeline (for reuse)
+            aspect_ratio: Target aspect ratio
         """
+        width, height = self.get_aspect_dimensions(aspect_ratio)
+        
         # Try ComfyUI first
         if self.use_comfyui and self.comfyui_client:
-            return self._generate_with_comfyui(prompt), None
+            return self._generate_with_comfyui(prompt, width, height), None
         
         # Fallback to diffusers
-        return self._generate_with_diffusers(prompt, pipe)
+        return self._generate_with_diffusers(prompt, pipe, width, height)
     
-    def _generate_with_comfyui(self, prompt: str) -> Image.Image:
+    def _generate_with_comfyui(self, prompt: str, width: int = 1024, height: int = 576) -> Image.Image:
         """Generate image using ComfyUI API."""
-        print(f"   🎨 Generating with ComfyUI...")
+        print(f"   🎨 Generating with ComfyUI ({width}x{height})...")
         
         # Get workflow path from config if set
         workflow_path = getattr(config, 'COMFYUI_WORKFLOW', None)
@@ -151,7 +190,7 @@ Only output the JSON array, nothing else."""
             image, _ = self._generate_with_diffusers(prompt, None)
             return image
     
-    def _generate_with_diffusers(self, prompt: str, pipe=None) -> tuple:
+    def _generate_with_diffusers(self, prompt: str, pipe=None, width: int = 1024, height: int = 576) -> tuple:
         """Generate image using SDXL Lightning via diffusers."""
         from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler
         
@@ -200,8 +239,8 @@ Only output the JSON array, nothing else."""
                 negative_prompt=negative,
                 num_inference_steps=4,
                 guidance_scale=2.0,
-                width=1024,
-                height=576,  # 16:9 aspect ratio
+                width=width,
+                height=height,
             )
             image = result.images[0]
         
@@ -217,39 +256,39 @@ Only output the JSON array, nothing else."""
                     negative_prompt=negative,
                     num_inference_steps=4,
                     guidance_scale=2.0,
-                    width=1024,
-                    height=576,
+                    width=width,
+                    height=height,
                 )
                 image = result.images[0]
         
         return image, pipe
     
-    def generate_audio(self, text: str, language: str, output_path: Path) -> Path:
-        """Generate TTS audio using edge-tts (simpler than XTTS)."""
-        import edge_tts
-        import asyncio
+    def generate_audio(self, text: str, language: str, output_path: Path, speaker_wav: str = None) -> Path:
+        """
+        Generate TTS audio using unified TTS engine.
+        Supports F5-TTS, XTTS, and Edge-TTS with automatic fallback.
+        """
+        from pipeline.tts_engine import UnifiedTTS
         
-        # Map language codes to edge-tts voices
-        voice_map = {
-            "en": "en-US-AriaNeural",
-            "hi": "hi-IN-SwaraNeural",
-            "ta": "ta-IN-PallaviNeural",
-            "te": "te-IN-ShrutiNeural",
-            "bn": "bn-IN-TanishaaNeural",
-            "mr": "mr-IN-AarohiNeural",
-            "gu": "gu-IN-DhwaniNeural",
-            "kn": "kn-IN-SapnaNeural",
-            "ml": "ml-IN-SobhanaNeural",
-        }
+        # Initialize TTS if not already done
+        if not hasattr(self, '_tts') or self._tts is None:
+            self._tts = UnifiedTTS(speaker_wav=speaker_wav)
         
-        voice = voice_map.get(language, "en-US-AriaNeural")
+        # Generate audio
+        self._tts.synthesize(
+            text=text,
+            output_path=output_path,
+            language=language,
+            speaker_wav=speaker_wav,
+        )
         
-        async def generate():
-            communicate = edge_tts.Communicate(text, voice)
-            await communicate.save(str(output_path))
-        
-        asyncio.run(generate())
         return output_path
+    
+    def cleanup_tts(self):
+        """Cleanup TTS resources."""
+        if hasattr(self, '_tts') and self._tts is not None:
+            self._tts.unload()
+            self._tts = None
     
     def create_video_from_scenes(
         self,
@@ -329,11 +368,28 @@ Only output the JSON array, nothing else."""
         story_text: str,
         title: str,
         language: str,
-        num_scenes: int,
+        num_scenes: int = None,
+        scene_mode: str = "auto",
+        aspect_ratio: str = "16:9",
+        style_prefix: str = "",
+        extract_characters: bool = True,
+        speaker_wav: str = None,
         progress_callback=None
     ) -> Path:
         """
         Full pipeline: text → scenes → images → audio → video
+        
+        Args:
+            story_text: The story text to convert
+            title: Video title
+            language: Language code for TTS
+            num_scenes: Number of scenes (None for auto)
+            scene_mode: "auto", "short", "medium", "long", "custom"
+            aspect_ratio: "16:9", "9:16", "1:1"
+            style_prefix: Style tokens for image generation
+            extract_characters: Whether to extract characters for consistency
+            speaker_wav: Optional reference audio for voice cloning
+            progress_callback: Progress callback function
         """
         # Create project directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -341,21 +397,49 @@ Only output the JSON array, nothing else."""
         project_dir = self.output_dir / f"{timestamp}_{safe_title}"
         project_dir.mkdir(parents=True, exist_ok=True)
         
+        # Calculate scene count
+        if num_scenes is None or scene_mode != "custom":
+            num_scenes = self.calculate_scenes(story_text, scene_mode, num_scenes or 5)
+        
         print(f"\n{'='*60}")
         print(f"📚 Text to Video: {title}")
-        print(f"   Scenes: {num_scenes}")
+        print(f"   Scenes: {num_scenes} (mode: {scene_mode})")
+        print(f"   Aspect Ratio: {aspect_ratio}")
         print(f"   Language: {config.LANGUAGES.get(language, language)}")
+        print(f"   Character Extraction: {'Yes' if extract_characters else 'No'}")
         print(f"{'='*60}\n")
         
-        # Step 1: Split story into scenes
+        # Step 1: Split story into scenes with character extraction
         if progress_callback:
-            progress_callback(0, 5, "Splitting story into scenes...")
+            progress_callback(0, 5, "Analyzing story and extracting characters...")
         print("📝 Step 1: Splitting story into scenes...")
-        scenes = self.split_into_scenes(story_text, num_scenes)
+        scenes = self.split_into_scenes(
+            story_text, 
+            num_scenes, 
+            extract_characters=extract_characters,
+            style_prefix=style_prefix,
+        )
         print(f"   ✅ Created {len(scenes)} scenes")
         
-        # Save scenes
+        # Log character info if extracted
+        if self.current_analysis and self.current_analysis.characters:
+            print(f"   👥 Found {len(self.current_analysis.characters)} characters:")
+            for char in self.current_analysis.characters[:5]:
+                print(f"      - {char.name}: {char.description[:50]}...")
+        
+        # Save scenes and analysis
         (project_dir / "scenes.json").write_text(json.dumps(scenes, indent=2, ensure_ascii=False))
+        if self.current_analysis:
+            analysis_data = {
+                "title": self.current_analysis.title,
+                "total_scenes": self.current_analysis.total_scenes,
+                "characters": [
+                    {"name": c.name, "description": c.description, "traits": c.visual_traits}
+                    for c in self.current_analysis.characters
+                ],
+                "estimated_duration": self.current_analysis.estimated_duration,
+            }
+            (project_dir / "analysis.json").write_text(json.dumps(analysis_data, indent=2, ensure_ascii=False))
         
         # Step 2: Generate images
         if progress_callback:
@@ -368,7 +452,7 @@ Only output the JSON array, nothing else."""
         
         for i, scene in enumerate(scenes):
             print(f"   🖼️ Image {i+1}/{len(scenes)}...")
-            image, pipe = self.generate_image(scene["image_prompt"], pipe)
+            image, pipe = self.generate_image(scene["image_prompt"], pipe, aspect_ratio)
             
             # Save image
             img_path = project_dir / f"scene_{i:02d}.png"
@@ -381,7 +465,7 @@ Only output the JSON array, nothing else."""
         del pipe
         cleanup()
         
-        # Step 3: Generate audio
+        # Step 3: Generate audio with upgraded TTS
         if progress_callback:
             progress_callback(2, 5, "Generating narration...")
         print("\n🎙️ Step 3: Generating narration...")
@@ -389,10 +473,13 @@ Only output the JSON array, nothing else."""
         audio_files = []
         for i, scene in enumerate(scenes):
             print(f"   🔊 Audio {i+1}/{len(scenes)}...")
-            audio_path = project_dir / f"audio_{i:02d}.mp3"
-            self.generate_audio(scene["narration"], language, audio_path)
+            audio_path = project_dir / f"audio_{i:02d}.wav"
+            self.generate_audio(scene["narration"], language, audio_path, speaker_wav)
             audio_files.append(audio_path)
             print(f"      ✅ Saved: {audio_path.name}")
+        
+        # Cleanup TTS
+        self.cleanup_tts()
         
         # Step 4: Create video
         if progress_callback:
@@ -418,11 +505,15 @@ Only output the JSON array, nothing else."""
 
 # Create Gradio interface
 def create_interface():
-    """Build the Gradio UI."""
+    """Build the Gradio UI with enhanced options."""
     
     pipeline = TextToVideo()
     
-    def process_story(story_text, title, language, num_scenes, progress=gr.Progress()):
+    def process_story(
+        story_text, title, language, scene_mode, custom_scenes, 
+        aspect_ratio, style_preset, extract_chars, speaker_wav,
+        progress=gr.Progress()
+    ):
         if not story_text.strip():
             return None, "❌ Please enter a story"
         if not title.strip():
@@ -431,29 +522,64 @@ def create_interface():
         def update_progress(current, total, message):
             progress((current / total), desc=message)
         
+        # Get style prefix from preset
+        style_presets = {
+            "anime": "masterpiece, best quality, anime style, vibrant colors",
+            "realistic": "photorealistic, highly detailed, cinematic lighting",
+            "illustration": "digital illustration, artstation trending, detailed",
+            "watercolor": "watercolor painting, soft colors, artistic",
+            "comic": "comic book style, bold lines, dynamic composition",
+            "none": "",
+        }
+        style_prefix = style_presets.get(style_preset, "")
+        
         try:
             video_path = pipeline.process(
                 story_text=story_text.strip(),
                 title=title.strip(),
                 language=language,
-                num_scenes=num_scenes,
+                num_scenes=custom_scenes if scene_mode == "custom" else None,
+                scene_mode=scene_mode,
+                aspect_ratio=aspect_ratio,
+                style_prefix=style_prefix,
+                extract_characters=extract_chars,
+                speaker_wav=speaker_wav if speaker_wav else None,
                 progress_callback=update_progress
             )
+            
+            # Get actual scene count
+            actual_scenes = len(pipeline.current_analysis.scenes) if pipeline.current_analysis else custom_scenes
+            char_info = ""
+            if pipeline.current_analysis and pipeline.current_analysis.characters:
+                chars = [c.name for c in pipeline.current_analysis.characters[:5]]
+                char_info = f"\n👥 **Characters:** {', '.join(chars)}"
             
             status = f"""
 ✅ **Video Generated!**
 
 📁 **Location:** `{video_path.parent}`
 🎬 **File:** `{video_path.name}`
-📊 **Scenes:** {num_scenes}
+📊 **Scenes:** {actual_scenes}
+📐 **Aspect Ratio:** {aspect_ratio}
+🎨 **Style:** {style_preset}{char_info}
 """
             return str(video_path), status
             
         except Exception as e:
             cleanup()
+            if hasattr(pipeline, '_tts') and pipeline._tts:
+                pipeline.cleanup_tts()
             import traceback
             traceback.print_exc()
             return None, f"❌ Error: {str(e)}"
+    
+    def estimate_scenes(story_text, scene_mode):
+        """Estimate scene count based on text and mode."""
+        if not story_text.strip():
+            return "Enter story text to estimate scenes"
+        count = pipeline.calculate_scenes(story_text.strip(), scene_mode)
+        word_count = len(story_text.split())
+        return f"📊 ~{word_count} words → **{count} scenes** estimated"
     
     lang_choices = [(v, k) for k, v in config.LANGUAGES.items()]
     
@@ -466,7 +592,7 @@ def create_interface():
 # 📖 AutoKatha - Text Story to Video
 ### Transform your stories into animated videos with AI
 
-Paste your story → AI generates scenes, artwork, and narration → Get video!
+**Features:** Auto scene splitting • Character consistency • Multiple aspect ratios • Voice cloning
 """)
         
         with gr.Row():
@@ -482,7 +608,7 @@ Once upon a time, in a kingdom far away, there lived a wise king named Vikram.
 He was known for his justice and kindness throughout the land.
 
 One day, a mysterious sage arrived at the palace gates with a magical challenge...""",
-                    lines=15
+                    lines=12
                 )
                 
                 title_input = gr.Textbox(
@@ -496,14 +622,58 @@ One day, a mysterious sage arrived at the palace gates with a magical challenge.
                         value="en",
                         label="Narration Language"
                     )
+                    aspect_ratio = gr.Dropdown(
+                        choices=[("Landscape (16:9)", "16:9"), ("Portrait (9:16)", "9:16"), ("Square (1:1)", "1:1")],
+                        value="16:9",
+                        label="Aspect Ratio"
+                    )
                 
-                num_scenes = gr.Slider(
-                    minimum=3,
-                    maximum=15,
-                    value=5,
-                    step=1,
-                    label="Number of Scenes"
-                )
+                with gr.Row():
+                    scene_mode = gr.Dropdown(
+                        choices=[
+                            ("Auto (based on length)", "auto"),
+                            ("Short (3-5 scenes)", "short"),
+                            ("Medium (6-10 scenes)", "medium"),
+                            ("Long (11-20 scenes)", "long"),
+                            ("Custom", "custom"),
+                        ],
+                        value="auto",
+                        label="Scene Count"
+                    )
+                    custom_scenes = gr.Slider(
+                        minimum=3,
+                        maximum=30,
+                        value=5,
+                        step=1,
+                        label="Custom Scenes",
+                        visible=True
+                    )
+                
+                scene_estimate = gr.Markdown("📊 Enter story to estimate scenes")
+                
+                with gr.Accordion("🎨 Advanced Options", open=False):
+                    style_preset = gr.Dropdown(
+                        choices=[
+                            ("Anime Style", "anime"),
+                            ("Realistic", "realistic"),
+                            ("Digital Illustration", "illustration"),
+                            ("Watercolor", "watercolor"),
+                            ("Comic Book", "comic"),
+                            ("No Style Prefix", "none"),
+                        ],
+                        value="anime",
+                        label="Art Style Preset"
+                    )
+                    extract_chars = gr.Checkbox(
+                        value=True,
+                        label="Extract Characters (for consistency)",
+                        info="AI will identify characters and maintain visual consistency"
+                    )
+                    speaker_wav = gr.Audio(
+                        label="Voice Clone Reference (optional)",
+                        type="filepath",
+                        sources=["upload"],
+                    )
                 
                 generate_btn = gr.Button("🎬 Generate Video", variant="primary", size="lg")
             
@@ -512,6 +682,18 @@ One day, a mysterious sage arrived at the palace gates with a magical challenge.
                 
                 video_output = gr.Video(label="Generated Video")
                 status_output = gr.Markdown("*Upload a story to begin...*")
+        
+        # Update scene estimate when text or mode changes
+        story_input.change(
+            fn=estimate_scenes,
+            inputs=[story_input, scene_mode],
+            outputs=[scene_estimate]
+        )
+        scene_mode.change(
+            fn=estimate_scenes,
+            inputs=[story_input, scene_mode],
+            outputs=[scene_estimate]
+        )
         
         # Example stories
         gr.Markdown("### 📚 Example Stories")
@@ -528,7 +710,12 @@ Arjun's journey had just begun. He would face demons, rescue kingdoms,
 and ultimately learn that true strength comes from compassion, not conquest.""",
                     "The Legend of Arjun",
                     "en",
-                    5
+                    "auto",
+                    5,
+                    "16:9",
+                    "anime",
+                    True,
+                    None,
                 ],
                 [
                     """In the beautiful valleys of Kashmir, there lived a clever fox named Raja.
@@ -542,15 +729,20 @@ With wit and courage, Raja retrieved the Rain Stone and saved his village.
 The animals celebrated, and Raja learned that helping others brings the greatest joy.""",
                     "Raja the Clever Fox",
                     "en",
-                    5
+                    "auto",
+                    5,
+                    "16:9",
+                    "illustration",
+                    True,
+                    None,
                 ]
             ],
-            inputs=[story_input, title_input, language, num_scenes]
+            inputs=[story_input, title_input, language, scene_mode, custom_scenes, aspect_ratio, style_preset, extract_chars, speaker_wav]
         )
         
         generate_btn.click(
             fn=process_story,
-            inputs=[story_input, title_input, language, num_scenes],
+            inputs=[story_input, title_input, language, scene_mode, custom_scenes, aspect_ratio, style_preset, extract_chars, speaker_wav],
             outputs=[video_output, status_output]
         )
     
@@ -562,7 +754,13 @@ if __name__ == "__main__":
     
     # Check dependencies
     import subprocess
-    result = subprocess.run(["which", "ffmpeg"], capture_output=True)
+    import sys
+    
+    if sys.platform == 'win32':
+        result = subprocess.run(["where", "ffmpeg"], capture_output=True)
+    else:
+        result = subprocess.run(["which", "ffmpeg"], capture_output=True)
+    
     if result.returncode == 0:
         print("✅ FFmpeg available")
     else:
@@ -577,9 +775,32 @@ if __name__ == "__main__":
     except:
         print("⚠️ Ollama not running - scene splitting will use fallback")
     
+    # Check TTS backends
+    tts_backends = []
+    try:
+        from f5_tts.api import F5TTS
+        tts_backends.append("F5-TTS")
+    except:
+        pass
+    try:
+        from TTS.api import TTS
+        tts_backends.append("XTTS")
+    except:
+        pass
+    try:
+        import edge_tts
+        tts_backends.append("Edge-TTS")
+    except:
+        pass
+    
+    if tts_backends:
+        print(f"✅ TTS backends available: {', '.join(tts_backends)}")
+    else:
+        print("⚠️ No TTS backend found - install edge-tts: pip install edge-tts")
+    
     demo = create_interface()
     demo.launch(
         server_name="127.0.0.1",
-        server_port=7861,  # Different port
+        server_port=7861,
         share=False
     )

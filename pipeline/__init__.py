@@ -10,6 +10,15 @@ from .voice import Voice, synthesize_script
 from .captioner import Captioner, generate_captions
 from .composer import Composer, compose_video
 from .orchestrator import AutoKatha, generate_video
+from .tts_engine import UnifiedTTS, TTSBackend, F5TTSEngine, XTTSEngine, EdgeTTSEngine
+from .story_processor import (
+    StoryProcessor, AspectRatio, Character, Scene, StoryAnalysis,
+    detect_chapters, chunk_large_text
+)
+from .large_text_processor import (
+    LargeTextProcessor, BookAnalysis, Chapter,
+    process_book_file, StreamingBookProcessor
+)
 
 __all__ = [
     # Memory
@@ -24,10 +33,18 @@ __all__ = [
     "Animator", "KenBurnsAnimator", "animate_with_svd", "animate_with_kenburns",
     # Voice
     "Voice", "synthesize_script",
+    # TTS Engine
+    "UnifiedTTS", "TTSBackend", "F5TTSEngine", "XTTSEngine", "EdgeTTSEngine",
     # Captioner
     "Captioner", "generate_captions",
     # Composer
     "Composer", "compose_video",
     # Orchestrator
     "AutoKatha", "generate_video",
+    # Story Processor
+    "StoryProcessor", "AspectRatio", "Character", "Scene", "StoryAnalysis",
+    "detect_chapters", "chunk_large_text",
+    # Large Text Processor
+    "LargeTextProcessor", "BookAnalysis", "Chapter",
+    "process_book_file", "StreamingBookProcessor",
 ]
