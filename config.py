@@ -4,6 +4,13 @@ AutoKatha Configuration
 import os
 from pathlib import Path
 
+# Load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, use environment variables directly
+
 # ============================================================================
 # PATHS
 # ============================================================================
@@ -82,6 +89,21 @@ TTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 
 # Whisper - Captions
 WHISPER_MODEL = "base"  # Options: tiny, base, small, medium, large
+
+# ============================================================================
+# LLM SETTINGS (for scene splitting and prompts)
+# ============================================================================
+# Groq API (recommended - faster & smarter)
+# Get your API key at: https://console.groq.com/keys
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")  # Set via environment variable
+GROQ_MODEL = "openai/gpt-oss-120b"  # Options: openai/gpt-oss-120b, llama-3.3-70b-versatile, mixtral-8x7b-32768
+
+# Ollama (local fallback)
+OLLAMA_MODEL = "gemma3:4b"
+OLLAMA_HOST = "http://localhost:11434"
+
+# LLM Backend: "groq" or "ollama" (auto-selects groq if API key is set)
+LLM_BACKEND = "groq" if GROQ_API_KEY else "ollama"
 
 # ============================================================================
 # VIDEO SETTINGS

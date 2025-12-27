@@ -96,21 +96,81 @@ class StoryProcessor:
     
     def __init__(
         self,
-        ollama_model: str = "gemma3:4b",
-        ollama_host: str = "http://localhost:11434",
+        ollama_model: str = None,
+        ollama_host: str = None,
+        groq_api_key: str = None,
+        groq_model: str = None,
     ):
-        self.model = ollama_model
-        self.host = ollama_host
-        self._check_ollama()
+        import config
+        
+        # Use config values if not specified
+        self.ollama_model = ollama_model or config.OLLAMA_MODEL
+        self.ollama_host = ollama_host or config.OLLAMA_HOST
+        self.groq_api_key = groq_api_key or config.GROQ_API_KEY
+        self.groq_model = groq_model or config.GROQ_MODEL
+        
+        # Determine backend
+        self.backend = "groq" if self.groq_api_key else "ollama"
+        
+        if self.backend == "groq":
+            print(f"🧠 Using Groq API with {self.groq_model}")
+        else:
+            print(f"🧠 Using Ollama with {self.ollama_model}")
+            self._check_ollama()
     
     def _check_ollama(self):
         """Verify Ollama is running."""
         try:
-            response = requests.get(f"{self.host}/api/tags", timeout=5)
+            response = requests.get(f"{self.ollama_host}/api/tags", timeout=5)
             if response.status_code != 200:
                 raise ConnectionError("Ollama not responding")
         except Exception as e:
             print(f"⚠️ Ollama check failed: {e}")
+    
+    def _call_llm(self, prompt: str, system: str = None, temperature: float = 0.7) -> str:
+        """Call LLM API (Groq or Ollama)."""
+        if self.backend == "groq":
+            return self._call_groq(prompt, system, temperature)
+        else:
+            return self._call_ollama(prompt, system, temperature)
+    
+    def _call_groq(self, prompt: str, system: str = None, temperature: float = 0.7) -> str:
+        """Call Groq API."""
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.groq_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": self.groq_model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": 8000,
+                },
+                timeout=120
+            )
+            result = response.json()
+            if "choices" in result:
+                return result["choices"][0]["message"]["content"]
+            elif "error" in result:
+                print(f"❌ Groq error: {result['error']}")
+                # Fallback to Ollama
+                print("   Falling back to Ollama...")
+                self.backend = "ollama"
+                return self._call_ollama(prompt, system, temperature)
+            return ""
+        except Exception as e:
+            print(f"❌ Groq error: {e}")
+            print("   Falling back to Ollama...")
+            self.backend = "ollama"
+            return self._call_ollama(prompt, system, temperature)
     
     def _call_ollama(self, prompt: str, system: str = None, temperature: float = 0.7) -> str:
         """Call Ollama API."""
@@ -121,9 +181,9 @@ class StoryProcessor:
         
         try:
             response = requests.post(
-                f"{self.host}/api/chat",
+                f"{self.ollama_host}/api/chat",
                 json={
-                    "model": self.model,
+                    "model": self.ollama_model,
                     "messages": messages,
                     "stream": False,
                     "options": {"temperature": temperature}
@@ -209,7 +269,7 @@ Only output the JSON array, nothing else."""
 
 Characters (JSON):"""
 
-        result = self._call_ollama(user_prompt, system_prompt, temperature=0.3)
+        result = self._call_llm(user_prompt, system_prompt, temperature=0.3)
         
         # Parse JSON
         try:
@@ -248,13 +308,13 @@ Characters (JSON):"""
             for c in characters:
                 char_reference += f"- {c.name}: {c.to_prompt()}\n"
         
-        system_prompt = f"""You are a professional storyboard artist creating scenes for an animated video.
+        system_prompt = f"""You are a professional storyboard artist and AI art prompt engineer creating scenes for an animated video.
 
 Your task:
 1. Split the story into exactly {num_scenes} visually distinct scenes
-2. Each scene needs narration text (to be spoken) and an image prompt (for AI art)
+2. Each scene needs narration text (to be spoken) and a HIGHLY DETAILED image prompt
 3. Maintain character consistency using the provided character descriptions
-4. Image prompts should be detailed, visual, and suitable for AI image generation
+4. Image prompts must be EXTREMELY detailed and specific for AI image generation
 
 {char_reference}
 
@@ -262,19 +322,28 @@ Output JSON array with this structure:
 [
   {{
     "narration": "The spoken narration text (1-3 sentences)",
-    "image_prompt": "Detailed visual description for AI art generation",
+    "image_prompt": "EXTREMELY detailed visual description - see guidelines below",
     "characters": ["character names appearing in this scene"],
     "setting": "location/environment",
     "mood": "emotional tone (happy, tense, mysterious, etc.)"
   }}
 ]
 
-Guidelines for image_prompt:
-- Be specific about visual details
-- Include lighting, composition, atmosphere
-- Reference character visual traits consistently
-- Keep under 200 words
-- {f'Always start with: {style_prefix}' if style_prefix else 'Use vivid descriptive language'}
+CRITICAL GUIDELINES for image_prompt (MUST follow all):
+1. COMPOSITION: Specify shot type (close-up, medium shot, wide shot, bird's eye view, low angle, etc.)
+2. CHARACTERS: Describe exact poses, expressions, clothing, accessories. Include ALL visual traits.
+3. ENVIRONMENT: Detailed background description - architecture, nature, weather, time of day
+4. LIGHTING: Specify lighting type (dramatic side lighting, soft ambient, golden hour, moonlit, neon glow, etc.)
+5. ATMOSPHERE: Include mood elements (mist, dust particles, rays of light, shadows, etc.)
+6. COLORS: Mention dominant color palette (warm tones, cool blues, vibrant, muted pastels, etc.)
+7. ART STYLE: Include style keywords (anime style, detailed illustration, cinematic, painterly, etc.)
+8. DETAILS: Add specific visual details that make the scene unique and interesting
+9. LENGTH: Each image_prompt should be 80-150 words minimum
+
+Example of a GOOD image_prompt:
+"Dramatic wide shot of a young warrior with flowing silver hair and piercing blue eyes, wearing ornate black armor with gold trim, standing at the edge of a cliff overlooking a vast misty valley. Sunset lighting with golden rays breaking through storm clouds. Wind blowing cape and hair to the left. Ancient ruins visible in the distance. Atmospheric fog in the valley below. Dramatic shadows and rim lighting on the character. Epic fantasy illustration style, highly detailed, cinematic composition, vibrant orange and purple sky contrasting with dark foreground."
+
+{f'Always start prompts with: {style_prefix}' if style_prefix else 'Use vivid, specific descriptive language'}
 
 Only output the JSON array."""
 
@@ -284,7 +353,7 @@ Only output the JSON array."""
 
 Scenes (JSON):"""
 
-        result = self._call_ollama(user_prompt, system_prompt, temperature=0.7)
+        result = self._call_llm(user_prompt, system_prompt, temperature=0.7)
         
         # Parse JSON
         try:
