@@ -43,28 +43,53 @@ class TextToVideo:
                 print("⚠️ ComfyUI not running - falling back to diffusers")
         except Exception as e:
             print(f"⚠️ ComfyUI connection failed: {e} - falling back to diffusers")
+    
+    @staticmethod
+    def calculate_scene_count(text: str) -> int:
+        """
+        Auto-calculate optimal scene count based on text length.
+        ~100-150 words per scene for good pacing.
+        """
+        word_count = len(text.split())
+        # Minimum 3 scenes, maximum 50 scenes
+        # Aim for ~120 words per scene
+        suggested = max(3, min(50, word_count // 120))
+        return suggested
         
     def split_into_scenes(self, story_text: str, num_scenes: int = 5) -> list:
         """
-        Use Gemma3 via Ollama to split story into scenes with image prompts.
+        Use Gemma3 via Ollama to split story into scenes with enhanced prompts.
         """
         import requests
         
-        prompt = f"""You are a storyboard artist. Split this story into exactly {num_scenes} scenes.
+        prompt = f"""You are a professional storyboard artist and screenwriter.
+
+Analyze this story and split it into exactly {num_scenes} cinematic scenes.
+
 For each scene, provide:
-1. A brief narration text (1-2 sentences to be read aloud)
-2. An image description for AI art generation (detailed visual description)
+1. **narration**: Engaging voiceover text (2-3 sentences, ~30-50 words). Write in present tense, dramatic style.
+2. **image_prompt**: Detailed visual description for AI art generation. Include:
+   - Character descriptions (appearance, clothing, expression)
+   - Setting/environment details
+   - Lighting and mood
+   - Camera angle (close-up, wide shot, etc.)
+3. **characters**: List of character names appearing in this scene
+4. **mood**: Emotional tone (happy, tense, sad, exciting, peaceful, dramatic, etc.)
 
 Story:
 {story_text}
 
-Respond in JSON format:
+Respond ONLY with a valid JSON array:
 [
-  {{"narration": "...", "image_prompt": "..."}},
+  {{
+    "narration": "...",
+    "image_prompt": "...",
+    "characters": ["name1", "name2"],
+    "mood": "..."
+  }},
   ...
 ]
-
-Only output the JSON array, nothing else."""
+"""
 
         try:
             response = requests.post(
@@ -455,7 +480,16 @@ def create_interface():
             traceback.print_exc()
             return None, f"❌ Error: {str(e)}"
     
+    def update_suggested_scenes(story_text):
+        """Calculate and display suggested scene count."""
+        if not story_text.strip():
+            return 5, "*Enter story to see suggestion*"
+        suggested = TextToVideo.calculate_scene_count(story_text)
+        word_count = len(story_text.split())
+        return suggested, f"📊 {word_count} words → Suggested: **{suggested} scenes**"
+    
     lang_choices = [(v, k) for k, v in config.LANGUAGES.items()]
+    aspect_choices = list(config.ASPECT_RATIOS.keys())
     
     with gr.Blocks(
         title="AutoKatha - Text to Video",
@@ -496,10 +530,17 @@ One day, a mysterious sage arrived at the palace gates with a magical challenge.
                         value="en",
                         label="Narration Language"
                     )
+                    aspect_ratio = gr.Dropdown(
+                        choices=aspect_choices,
+                        value=config.DEFAULT_ASPECT_RATIO,
+                        label="Aspect Ratio"
+                    )
+                
+                scene_suggestion = gr.Markdown("*Enter story to see suggestion*")
                 
                 num_scenes = gr.Slider(
                     minimum=3,
-                    maximum=15,
+                    maximum=50,
                     value=5,
                     step=1,
                     label="Number of Scenes"
@@ -546,6 +587,13 @@ The animals celebrated, and Raja learned that helping others brings the greatest
                 ]
             ],
             inputs=[story_input, title_input, language, num_scenes]
+        )
+        
+        # Wire up story input to update scene suggestion
+        story_input.change(
+            fn=update_suggested_scenes,
+            inputs=[story_input],
+            outputs=[num_scenes, scene_suggestion]
         )
         
         generate_btn.click(
