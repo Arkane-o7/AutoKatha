@@ -264,31 +264,41 @@ class TextToVideo:
         return image, pipe
     
     def generate_audio(self, text: str, language: str, output_path: Path, speaker_wav: str = None) -> Path:
-        """
-        Generate TTS audio using unified TTS engine.
-        Supports F5-TTS, XTTS, and Edge-TTS with automatic fallback.
-        """
-        from pipeline.tts_engine import UnifiedTTS
+        """Generate TTS audio using edge-tts (simple, reliable)."""
+        import edge_tts
+        import asyncio
         
-        # Initialize TTS if not already done
-        if not hasattr(self, '_tts') or self._tts is None:
-            self._tts = UnifiedTTS(speaker_wav=speaker_wav)
+        # Voice mapping for languages
+        voice_map = {
+            "en": "en-US-AriaNeural",
+            "hi": "hi-IN-SwaraNeural",
+            "ta": "ta-IN-PallaviNeural",
+            "te": "te-IN-ShrutiNeural",
+            "bn": "bn-IN-TanishaaNeural",
+            "mr": "mr-IN-AarohiNeural",
+            "gu": "gu-IN-DhwaniNeural",
+            "kn": "kn-IN-SapnaNeural",
+            "ml": "ml-IN-SobhanaNeural",
+            "pa": "pa-IN-GurpreetNeural",
+            "es": "es-ES-ElviraNeural",
+            "fr": "fr-FR-DeniseNeural",
+            "de": "de-DE-KatjaNeural",
+            "ja": "ja-JP-NanamiNeural",
+            "zh": "zh-CN-XiaoxiaoNeural",
+        }
         
-        # Generate audio
-        self._tts.synthesize(
-            text=text,
-            output_path=output_path,
-            language=language,
-            speaker_wav=speaker_wav,
-        )
+        voice = voice_map.get(language, "en-US-AriaNeural")
         
+        async def _generate():
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(str(output_path))
+        
+        asyncio.run(_generate())
         return output_path
     
     def cleanup_tts(self):
-        """Cleanup TTS resources."""
-        if hasattr(self, '_tts') and self._tts is not None:
-            self._tts.unload()
-            self._tts = None
+        """Cleanup TTS resources (no-op for edge-tts)."""
+        pass
     
     def create_video_from_scenes(
         self,

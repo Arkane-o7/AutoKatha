@@ -187,9 +187,11 @@ class ComfyUIClient:
         if negative_node_id in workflow and negative_node_id in workflow:
             workflow[negative_node_id]["inputs"]["text"] = negative_prompt
         
-        # Inject seed
-        if seed is not None and seed_node_id in workflow:
-            workflow[seed_node_id]["inputs"]["seed"] = seed
+        # Inject seed - ALWAYS randomize if not specified to avoid duplicate images
+        if seed_node_id in workflow:
+            import random
+            actual_seed = seed if seed is not None else random.randint(0, 2**63 - 1)
+            workflow[seed_node_id]["inputs"]["seed"] = actual_seed
         
         # Run workflow
         images = self.run_workflow(workflow)

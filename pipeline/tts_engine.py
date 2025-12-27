@@ -481,16 +481,14 @@ class UnifiedTTS:
         
         except Exception as e:
             print(f"⚠️ {backend.value} failed: {e}")
-            # Try fallback
-            for fallback in self._available_backends:
-                if fallback != backend:
-                    print(f"   Trying fallback: {fallback.value}")
-                    try:
-                        return self.synthesize(
-                            text, output_path, language, speaker_wav, speed
-                        )
-                    except:
-                        continue
+            # Remove failed backend from available list to prevent infinite retry
+            if backend in self._available_backends:
+                self._available_backends.remove(backend)
+            # Try fallback with remaining backends
+            if self._available_backends:
+                remaining = [b.value for b in self._available_backends]
+                print(f"   Trying fallback: {remaining[0]}")
+                return self.synthesize(text, output_path, language, speaker_wav, speed)
             raise RuntimeError(f"All TTS backends failed for text: {text[:50]}...")
     
     def synthesize_batch(
