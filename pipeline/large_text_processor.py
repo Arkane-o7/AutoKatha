@@ -51,8 +51,8 @@ class LargeTextProcessor:
     
     # Rough estimates
     WORDS_PER_PAGE = 250
-    SECONDS_PER_SCENE = 8  # Average narration + viewing time
-    MAX_SCENES_PER_EPISODE = 30  # ~4 minute episode
+    SECONDS_PER_SCENE = 10  # Average narration + viewing time (for 30-35 min videos)
+    MAX_SCENES_PER_EPISODE = 200  # ~30 minute episode (200 * 10s = 33 min)
     
     def __init__(
         self,
@@ -203,7 +203,6 @@ class LargeTextProcessor:
         self,
         chapter: Chapter,
         scenes_per_chapter: int = None,
-        style_prefix: str = "",
         progress_callback=None,
     ) -> List[Scene]:
         """
@@ -212,7 +211,6 @@ class LargeTextProcessor:
         Args:
             chapter: Chapter to process
             scenes_per_chapter: Override scene count (None for auto)
-            style_prefix: Style tokens for prompts
             progress_callback: Progress callback
         
         Returns:
@@ -227,7 +225,6 @@ class LargeTextProcessor:
             text=chapter.content,
             num_scenes=scenes_per_chapter,
             characters=self.characters,
-            style_prefix=style_prefix,
         )
         
         chapter.scenes = scenes
@@ -238,8 +235,7 @@ class LargeTextProcessor:
         text: str,
         title: str = "Book",
         author: str = "Unknown",
-        max_scenes_total: int = 100,
-        style_prefix: str = "",
+        max_scenes_total: int = 200,
         progress_callback=None,
     ) -> BookAnalysis:
         """
@@ -250,7 +246,6 @@ class LargeTextProcessor:
             title: Book title
             author: Author name
             max_scenes_total: Maximum total scenes
-            style_prefix: Style tokens
             progress_callback: Progress callback(current, total, message)
         
         Returns:
@@ -291,7 +286,6 @@ class LargeTextProcessor:
             scenes = self.process_chapter(
                 chapter=chapter,
                 scenes_per_chapter=scenes_per_chapter,
-                style_prefix=style_prefix,
             )
             
             # Offset scene indices
@@ -327,30 +321,52 @@ class LargeTextProcessor:
         self,
         analysis: BookAnalysis,
         scenes_per_episode: int = None,
-    ) -> List[List[Scene]]:
+        target_duration_minutes: int = 30,
+    ) -> List[Dict]:
         """
-        Split book scenes into episodes for sequential video generation.
+        Split book scenes into episodes/parts for sequential video generation.
         
         Args:
             analysis: BookAnalysis from process_book
-            scenes_per_episode: Scenes per episode (None for auto)
+            scenes_per_episode: Scenes per episode (None for auto-calculate)
+            target_duration_minutes: Target duration per part in minutes
         
         Returns:
-            List of episode scene lists
+            List of episode dicts with metadata:
+            [{"part": 1, "total_parts": N, "scenes": [...], "title": "Part 1 of N"}, ...]
         """
         if scenes_per_episode is None:
-            scenes_per_episode = self.MAX_SCENES_PER_EPISODE
+            # Calculate based on target duration (10 seconds per scene)
+            scenes_per_episode = target_duration_minutes * 6  # 6 scenes per minute
         
         # Gather all scenes
         all_scenes = []
         for chapter in analysis.chapters:
             all_scenes.extend(chapter.scenes)
         
-        # Split into episodes
+        total_scenes = len(all_scenes)
+        total_parts = max(1, (total_scenes + scenes_per_episode - 1) // scenes_per_episode)
+        
+        # Split into episodes/parts
         episodes = []
-        for i in range(0, len(all_scenes), scenes_per_episode):
+        for i in range(0, total_scenes, scenes_per_episode):
             episode_scenes = all_scenes[i:i + scenes_per_episode]
-            episodes.append(episode_scenes)
+            part_num = len(episodes) + 1
+            
+            episode = {
+                "part": part_num,
+                "total_parts": total_parts,
+                "title": f"{analysis.title} - Part {part_num}" if total_parts > 1 else analysis.title,
+                "subtitle": f"Part {part_num} of {total_parts}" if total_parts > 1 else "",
+                "scenes": episode_scenes,
+                "scene_count": len(episode_scenes),
+                "estimated_duration_minutes": len(episode_scenes) * self.SECONDS_PER_SCENE / 60,
+            }
+            episodes.append(episode)
+        
+        print(f"📺 Split into {total_parts} part(s):")
+        for ep in episodes:
+            print(f"   Part {ep['part']}: {ep['scene_count']} scenes (~{ep['estimated_duration_minutes']:.1f} min)")
         
         return episodes
     
@@ -397,8 +413,7 @@ class LargeTextProcessor:
 def process_book_file(
     file_path: str,
     output_dir: str = None,
-    max_scenes: int = 100,
-    style_prefix: str = "",
+    max_scenes: int = 200,
 ) -> BookAnalysis:
     """
     Convenience function to process a book file.
@@ -420,7 +435,6 @@ def process_book_file(
         text=text,
         title=title,
         max_scenes_total=max_scenes,
-        style_prefix=style_prefix,
     )
     
     # Save analysis
@@ -539,7 +553,6 @@ class StreamingBookProcessor:
         file_path: str,
         output_dir: str,
         scenes_per_chapter: int = 5,
-        style_prefix: str = "",
         progress_callback=None,
     ) -> List[Path]:
         """
@@ -549,7 +562,6 @@ class StreamingBookProcessor:
             file_path: Path to book file
             output_dir: Output directory
             scenes_per_chapter: Scenes per chapter
-            style_prefix: Style tokens
             progress_callback: Progress callback
         
         Returns:
@@ -569,7 +581,6 @@ class StreamingBookProcessor:
             scenes = self.processor.process_chapter(
                 chapter=chapter,
                 scenes_per_chapter=scenes_per_chapter,
-                style_prefix=style_prefix,
             )
             
             all_scenes.extend(scenes)

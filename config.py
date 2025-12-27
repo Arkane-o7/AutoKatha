@@ -96,7 +96,7 @@ WHISPER_MODEL = "base"  # Options: tiny, base, small, medium, large
 # Groq API (recommended - faster & smarter)
 # Get your API key at: https://console.groq.com/keys
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")  # Set via environment variable
-GROQ_MODEL = "openai/gpt-oss-120b"  # Options: openai/gpt-oss-120b, llama-3.3-70b-versatile, mixtral-8x7b-32768
+GROQ_MODEL = "llama-3.1-70b-versatile"  # Options: llama-3.1-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768
 
 # Ollama (local fallback)
 OLLAMA_MODEL = "gemma3:4b"

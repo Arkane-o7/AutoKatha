@@ -19,6 +19,10 @@ from .large_text_processor import (
     LargeTextProcessor, BookAnalysis, Chapter,
     process_book_file, StreamingBookProcessor
 )
+from .summarizer import (
+    BookSummarizer, BookSummary, ChapterSummary,
+    summarize_from_text
+)
 
 __all__ = [
     # Memory
@@ -47,4 +51,7 @@ __all__ = [
     # Large Text Processor
     "LargeTextProcessor", "BookAnalysis", "Chapter",
     "process_book_file", "StreamingBookProcessor",
+    # Summarizer
+    "BookSummarizer", "BookSummary", "ChapterSummary",
+    "summarize_from_text",
 ]

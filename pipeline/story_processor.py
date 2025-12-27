@@ -136,6 +136,8 @@ class StoryProcessor:
     
     def _call_groq(self, prompt: str, system: str = None, temperature: float = 0.7) -> str:
         """Call Groq API."""
+        print(f"🧠 Calling Groq API ({self.groq_model})...")
+        
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -158,22 +160,31 @@ class StoryProcessor:
             )
             result = response.json()
             if "choices" in result:
-                return result["choices"][0]["message"]["content"]
+                content = result["choices"][0]["message"]["content"]
+                print(f"✅ Groq response received ({len(content)} chars)")
+                return content
             elif "error" in result:
-                print(f"❌ Groq error: {result['error']}")
-                # Fallback to Ollama
-                print("   Falling back to Ollama...")
+                print(f"\n{'='*60}")
+                print(f"❌ GROQ API ERROR: {result['error']}")
+                print(f"🔄 FALLING BACK TO OLLAMA ({self.ollama_model})")
+                print(f"{'='*60}\n")
                 self.backend = "ollama"
+                self._check_ollama()
                 return self._call_ollama(prompt, system, temperature)
             return ""
         except Exception as e:
-            print(f"❌ Groq error: {e}")
-            print("   Falling back to Ollama...")
+            print(f"\n{'='*60}")
+            print(f"❌ GROQ API EXCEPTION: {e}")
+            print(f"🔄 FALLING BACK TO OLLAMA ({self.ollama_model})")
+            print(f"{'='*60}\n")
             self.backend = "ollama"
+            self._check_ollama()
             return self._call_ollama(prompt, system, temperature)
     
     def _call_ollama(self, prompt: str, system: str = None, temperature: float = 0.7) -> str:
         """Call Ollama API."""
+        print(f"🤖 Calling Ollama ({self.ollama_model})...")
+        
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -190,16 +201,26 @@ class StoryProcessor:
                 },
                 timeout=120
             )
-            return response.json().get("message", {}).get("content", "")
+            result = response.json()
+            content = result.get("message", {}).get("content", "")
+            if content:
+                print(f"✅ Ollama response received ({len(content)} chars)")
+            else:
+                print(f"⚠️ Ollama returned empty response: {result}")
+            return content
         except Exception as e:
-            print(f"❌ Ollama error: {e}")
+            print(f"\n{'='*60}")
+            print(f"❌ OLLAMA ERROR: {e}")
+            print(f"   Make sure Ollama is running: ollama serve")
+            print(f"   Model needed: {self.ollama_model}")
+            print(f"{'='*60}\n")
             return ""
     
     def calculate_scene_count(
         self,
         text: str,
         min_scenes: int = 3,
-        max_scenes: int = 50,
+        max_scenes: int = 200,
         words_per_scene: int = 150,
     ) -> int:
         """
@@ -287,7 +308,6 @@ Characters (JSON):"""
         text: str,
         num_scenes: int,
         characters: List[Character] = None,
-        style_prefix: str = "",
     ) -> List[Scene]:
         """
         Split story into scenes with enhanced prompts.
@@ -296,7 +316,6 @@ Characters (JSON):"""
             text: Story text
             num_scenes: Number of scenes to create
             characters: Pre-extracted characters for consistency
-            style_prefix: Style tokens to add to image prompts
         
         Returns:
             List of Scene objects
@@ -343,7 +362,7 @@ CRITICAL GUIDELINES for image_prompt (MUST follow all):
 Example of a GOOD image_prompt:
 "Dramatic wide shot of a young warrior with flowing silver hair and piercing blue eyes, wearing ornate black armor with gold trim, standing at the edge of a cliff overlooking a vast misty valley. Sunset lighting with golden rays breaking through storm clouds. Wind blowing cape and hair to the left. Ancient ruins visible in the distance. Atmospheric fog in the valley below. Dramatic shadows and rim lighting on the character. Epic fantasy illustration style, highly detailed, cinematic composition, vibrant orange and purple sky contrasting with dark foreground."
 
-{f'Always start prompts with: {style_prefix}' if style_prefix else 'Use vivid, specific descriptive language'}
+Use vivid, specific descriptive language. Focus on cinematic quality and detail.
 
 Only output the JSON array."""
 
@@ -362,10 +381,7 @@ Scenes (JSON):"""
                 data = json.loads(json_match.group())
                 scenes = []
                 for i, s in enumerate(data[:num_scenes]):
-                    # Add style prefix to image prompt
                     img_prompt = s.get("image_prompt", "")
-                    if style_prefix and not img_prompt.startswith(style_prefix):
-                        img_prompt = f"{style_prefix}, {img_prompt}"
                     
                     scenes.append(Scene(
                         index=i,
@@ -380,9 +396,9 @@ Scenes (JSON):"""
             print(f"⚠️ Scene parsing failed: {e}")
         
         # Fallback: simple text splitting
-        return self._fallback_split(text, num_scenes, style_prefix)
+        return self._fallback_split(text, num_scenes)
     
-    def _fallback_split(self, text: str, num_scenes: int, style_prefix: str = "") -> List[Scene]:
+    def _fallback_split(self, text: str, num_scenes: int) -> List[Scene]:
         """Fallback scene splitting without LLM."""
         words = text.split()
         chunk_size = len(words) // num_scenes
@@ -396,7 +412,7 @@ Scenes (JSON):"""
             scenes.append(Scene(
                 index=i,
                 narration=chunk_text[:500],
-                image_prompt=f"{style_prefix}, scene depicting: {chunk_text[:150]}" if style_prefix else chunk_text[:200],
+                image_prompt=f"cinematic scene depicting: {chunk_text[:200]}",
             ))
         
         return scenes
@@ -406,7 +422,6 @@ Scenes (JSON):"""
         text: str,
         title: str = "Untitled",
         num_scenes: int = None,
-        style_prefix: str = "",
         extract_characters: bool = True,
     ) -> StoryAnalysis:
         """
@@ -416,7 +431,6 @@ Scenes (JSON):"""
             text: Story text
             title: Story title
             num_scenes: Number of scenes (None for auto-calculate)
-            style_prefix: Style tokens for image prompts
             extract_characters: Whether to extract characters
         
         Returns:
@@ -438,7 +452,7 @@ Scenes (JSON):"""
         
         # Split into scenes
         print(f"   Splitting into {num_scenes} scenes...")
-        scenes = self.split_into_scenes(text, num_scenes, characters, style_prefix)
+        scenes = self.split_into_scenes(text, num_scenes, characters)
         
         # Estimate duration (5s per scene average)
         estimated_duration = len(scenes) * 5.0
@@ -455,17 +469,15 @@ Scenes (JSON):"""
         self,
         base_prompt: str,
         characters: List[Character] = None,
-        style_tokens: str = "",
         aspect_ratio: AspectRatio = AspectRatio.LANDSCAPE,
-        quality_tokens: str = "masterpiece, best quality, highly detailed",
+        quality_tokens: str = "high quality, detailed, cinematic",
     ) -> str:
         """
-        Enhance an image prompt with style and character consistency.
+        Enhance an image prompt with character consistency.
         
         Args:
             base_prompt: Base scene description
             characters: Characters to include
-            style_tokens: Art style tokens
             aspect_ratio: Target aspect ratio
             quality_tokens: Quality enhancement tokens
         
@@ -477,10 +489,6 @@ Scenes (JSON):"""
         # Add quality tokens first
         if quality_tokens:
             parts.append(quality_tokens)
-        
-        # Add style tokens
-        if style_tokens:
-            parts.append(style_tokens)
         
         # Add character descriptions if referenced
         if characters:
